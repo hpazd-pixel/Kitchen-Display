@@ -278,10 +278,32 @@ pipeline = (
     | RunnableGenerator(_tts_stream)  # STT + Agent events -> All events
 )
 
+# Track all connected WebSocket clients for broadcasting
+connected_clients: set[WebSocket] = set()
+
+
+async def broadcast_event(event: VoiceAgentEvent):
+    """Broadcast event to all connected clients"""
+    event_data = event_to_dict(event)
+    disconnected = []
+    
+    for client in connected_clients:
+        try:
+            await client.send_json(event_data)
+        except (RuntimeError, WebSocketDisconnect):
+            # Client disconnected, mark for removal
+            disconnected.append(client)
+    
+    # Remove disconnected clients
+    for client in disconnected:
+        connected_clients.discard(client)
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    connected_clients.add(websocket)
+    print(f"Client connected. Total clients: {len(connected_clients)}")
 
     async def websocket_audio_stream() -> AsyncIterator[bytes]:
         """Async generator that yields audio bytes from the websocket."""
@@ -297,10 +319,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         async for event in output_stream:
-            await websocket.send_json(event_to_dict(event))
+            # Broadcast ALL events to all connected clients
+            await broadcast_event(event)
     except WebSocketDisconnect:
         # Client disconnected while we were sending events.
         pass
+    finally:
+        connected_clients.discard(websocket)
+        print(f"Client disconnected. Total clients: {len(connected_clients)}")
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

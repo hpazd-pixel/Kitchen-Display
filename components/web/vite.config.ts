@@ -12,4 +12,15 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        kitchen: "kitchen.html",
+      },
+      output: {
+        dir: "dist",
+      },
+    },
+  },
 });

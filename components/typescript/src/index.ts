@@ -279,7 +279,20 @@ async function* ttsStream(
   }
 }
 
-app.get("/*", serveStatic({ root: STATIC_DIR }));
+// Track all connected clients for broadcasting order events
+const connectedClients = new Set<WSContext<WebSocket>>();
+
+// Function to broadcast events to all clients
+function broadcastEvent(event: VoiceAgentEvent) {
+  const eventJson = JSON.stringify(event);
+  for (const client of connectedClients) {
+    try {
+      client.send(eventJson);
+    } catch (error) {
+      // Client disconnected, will be removed in onClose
+    }
+  }
+}
 
 app.get(
   "/ws",
@@ -298,15 +311,19 @@ app.get(
     const outputEventStream = ttsStream(agentEventStream);
 
     const flushPromise = iife(async () => {
-      // Process all events from the pipeline, sending events back to the client
+      // Process all events from the pipeline
       for await (const event of outputEventStream) {
-        currentSocket?.send(JSON.stringify(event));
+        // Broadcast ALL events to all connected clients
+        // This ensures kitchen display gets order confirmations
+        broadcastEvent(event);
       }
     });
 
     return {
       onOpen(_, ws) {
         currentSocket = ws;
+        connectedClients.add(ws);
+        console.log(`Client connected. Total clients: ${connectedClients.size}`);
       },
       onMessage(event) {
         // Push incoming audio data into the pipeline's input stream
@@ -319,12 +336,19 @@ app.get(
       },
       async onClose() {
         // Signal end of stream when socket closes
+        if (currentSocket) {
+          connectedClients.delete(currentSocket);
+          console.log(`Client disconnected. Total clients: ${connectedClients.size}`);
+        }
         inputStream.cancel();
         await flushPromise;
       },
     };
   })
 );
+
+// Serve static files - must be last to catch all routes
+app.get("/*", serveStatic({ root: STATIC_DIR, html: true }));
 
 const server = serve({
   fetch: app.fetch,
